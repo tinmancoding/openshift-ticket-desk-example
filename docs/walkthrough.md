@@ -1,6 +1,6 @@
 # GitHub to a controlled release
 
-This is an opt-in walkthrough, not a run-all script. Read the architecture first. Do not continue after a failed command. Use only your assigned isolated namespace and synthetic data. Keep your Git checkout, CLI state and evidence until cleanup is audited.
+This is an opt-in walkthrough, not a run-all script. Start from a clean **`main` baseline (API 1.0.0)**; `feature/urgent-tickets` is the already-completed 1.1.0 reference solution. Preserve any local edits before changing branches. Read the architecture first. Do not continue after a failed command. Use only your assigned isolated namespace and synthetic data. Keep your Git checkout, CLI state and evidence until cleanup is audited.
 
 ## 1. Platform prerequisites
 
@@ -141,7 +141,7 @@ OLD_TICKET_ID=1  # replace with the ID actually printed by your smoke run
 Create a feature branch in a repository where you have push permission:
 
 ```bash
-git switch -c feature/urgent-tickets
+git switch -c feature/my-urgent-tickets
 ```
 
 In `apps/api/ticket_api/__init__.py`:
@@ -166,7 +166,7 @@ git diff --check
 git diff
 git add apps/api/ticket_api/__init__.py tests/test_apps.py
 git commit -m "Support urgent tickets without changing existing clients"
-git push -u origin feature/urgent-tickets
+git push -u origin feature/my-urgent-tickets
 GREEN_SHA=$(git rev-parse HEAD)
 API_GREEN_IMAGE=$(desk build api "$GREEN_SHA")
 desk slot green --image "$API_GREEN_IMAGE" --renderer-url "$RENDERER_URL"

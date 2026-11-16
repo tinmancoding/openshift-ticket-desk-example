@@ -1,0 +1,50 @@
+# Knative application. It runs the existing built image; it does not build source.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: desk-renderer
+parameters:
+- name: RENDERER_IMAGE
+  description: Successful renderer PipelineRun image result, including @sha256:digest
+  required: true
+objects:
+- apiVersion: serving.knative.dev/v1
+  kind: Service
+  metadata:
+    name: desk-renderer
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    template:
+      metadata:
+        annotations:
+          autoscaling.knative.dev/min-scale: '0'
+          autoscaling.knative.dev/max-scale: '2'
+      spec:
+        serviceAccountName: desk-app
+        automountServiceAccountToken: false
+        timeoutSeconds: 30
+        containers:
+        - name: renderer
+          image: ${RENDERER_IMAGE}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+          - containerPort: 8080
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: '1'
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080

@@ -1,79 +1,58 @@
-# Operations, safety and limitations
+# Operations and limitations
 
-## Ownership and permissions
+Start with the [walkthrough](walkthrough.md), then use the dedicated [cleanup guide](cleanup.md). This page is reference material, not another prerequisite command sequence.
 
-All generated names start with `desk-`. Each installation has a random `ticket-desk.example/owner` label and an ignored private UID ledger. Setup refuses existing names it cannot prove it owns. Updates use JSON Patch tests on UID/resourceVersion; cleanup sends API DeleteOptions with UID preconditions. A matching label alone never authorizes changing/deleting a replaced object.
+## File and ownership safety
 
-Use one installation per namespace and do not run simultaneous setup/build/promotion/cleanup commands. Local state writes are atomic but not a multi-user coordination service. The state directory is mode 0700; namespace state is mode 0600 and contains the database password. It is ignored by Git. Never commit it, include it in a container context, copy it to an issue, or print it in a terminal recording. Generated definitions contain Secret **references**, not values. Setup preserves an existing matching Secret; password rotation is intentionally not a setup side effect.
+- Work only in your own isolated project; check `oc whoami` and `oc project` first.
+- Reserve `desk-*` names. `oc apply` can change an existing same-named object; it does not prove you own it. Static labels are not ownership receipts.
+- `openshift/` contains plain manifests, Templates, executions and patches. **Never apply it recursively.** Use the exact command/file pair from the walkthrough.
+- Keep processed YAML and the password Secret in ignored `.local/`; keep the Secret file mode 0600 and do not print/share it. Do not change the database password while retaining an initialized disk.
+- For retry executions, copy the Run into `.local/`, choose a new unused name and retain the failed attempt's evidence. Do not use `apply` to pretend a finished Run started again.
+- No custom deployment state, UID-protection CLI or automatic release approval exists in the new native path. You must inspect names, project, success conditions and candidate behavior before acting. Historical `.state/` evidence from the retired tooling is private and ignored; it is not needed for this walkthrough.
 
-The build Role is namespace-only and permits named BuildConfig instantiation and build metadata/log access. Build metadata/logs are readable across that namespace, so isolation still matters. No production mutation, Secret read, SCC privilege, cluster-admin binding or operator installation is required. Test/application identities have API-token automount disabled. OpenShift's separate build identity performs registry pushes; platform-provided internal pull bindings must work for Tekton/Knative.
+## Credentials and permissions
 
-The current kubeconfig is used as-is. Every cluster command supplies `-n`; the tool does not switch project, read instructor credentials or escalate on failures. A private kubeconfig path can be supplied through `KUBECONFIG` using your normal secure process.
+The build Role allows named BuildConfig instantiation, Build metadata/log reads and the two output ImageStream reads. It cannot deploy or patch traffic, read Secrets, grant roles or change SCCs. Logs/Build metadata are readable across the namespace, so use isolation. Test/application identities disable API token automount. OpenShift's separate build identity performs image pushes, and platform-provided image pull permissions must work for Tekton/Knative.
 
-## Cleanup
-
-From the same checkout/state used for installation:
-
-```bash
-export DESK_NAMESPACE=YOUR-NAMESPACE
-export DESK_IDENTITY=YOUR-USER
-desk() { python3 scripts/desk.py --confirm "$DESK_NAMESPACE" "$@"; }
-desk status
-oc get pipelineruns.tekton.dev,builds -n "$DESK_NAMESPACE"
-```
-
-Do not delete identities or source definitions while executions are active. A cancelled/timed-out PipelineRun can leave an independent OpenShift Build running. Inspect the exact Run and named Build first. If cancellation is needed, use your reviewed platform procedure (`tkn pipelinerun cancel RUN` and `oc cancel-build BUILD`) on only those named example executions, then wait for terminal conditions. Cleanup refuses active owned Runs/Builds.
-
-```bash
-# Remove owned runs, workload parents, routing, build recipes, Tasks and identities.
-# Retain the example's database PVC and Secret for deliberate recovery.
-desk cleanup
-
-# DESTRUCTIVE alternative: also erase this example's PostgreSQL PVC and Secret.
-# Use this only after explicitly deciding to discard its synthetic data.
-desk cleanup --delete-data
-```
-
-Cleanup archives are not erased. Run Pods/finalizers, Builds and Knative generated resources should disappear through their parent ownership. The CLI waits for each owned parent's foreground deletion, rather than deleting arbitrary child Pods or using namespace-wide `--all` commands. A cleanup timeout is a failure to investigate, not permission to strip finalizers or force-delete platform resources.
-
-Verify afterwards:
-
-```bash
-oc get pods,pvc,deployments,services,routes,buildconfigs,builds,imagestreams -n "$DESK_NAMESPACE"
-oc get pipelineruns.tekton.dev,taskruns.tekton.dev,tasks.tekton.dev,pipelines.tekton.dev -n "$DESK_NAMESPACE"
-oc get services.serving.knative.dev,revisions.serving.knative.dev -n "$DESK_NAMESPACE"
-```
-
-Without `--delete-data`, a retained `desk-db` PVC/Secret is expected; no running database remains. Re-running setup with the same private state can recreate its deleted owned resources and reattach the data. With `--delete-data`, discard/reinitialize database expectations; historical ticket IDs no longer imply existing data. If state is lost, do not relabel/adopt resources blindly—ask the owner to inspect exact UIDs and recover deliberately.
+For the prepared path, source is public and no Git credential is required. Fork/private-source authentication is a separate topic. Never embed tokens into URLs, Run parameters, YAML or recorded output.
 
 ## Troubleshooting
 
-| Symptom | Inspect |
+| Symptom | Inspect / recover |
 | --- | --- |
-| Wrong identity/project | `oc whoami`, explicit namespace and KUBECONFIG. Never fall back to an instructor identity. |
-| Role/RoleBinding denied | Review the narrow rules with the platform owner. A server dry-run of a RoleBinding can fail if its referenced dry-run Role was never persisted. This is not permission to grant `edit`. |
-| Source Task cannot fetch/install | Public HTTPS repository, **pushed full SHA**, GitHub/PyPI egress, source/archive structure and Python Task logs. |
-| No tests discovered | Source gate fails intentionally rather than approving an empty test suite. |
-| Build fails after source tests | Build logs, exact Git revision/contextDir, Dockerfile/base registry/package access and strategy admission. |
-| CI timeout with a live Build | Inspect/cancel that exact Build separately. Do not assume Task cancellation killed it. |
-| Image check cannot pull | Internal registry route/reference and namespace pull permissions. Do not add a privileged SCC. |
-| Database Pending / no ready Pod | PVC binding/storage class, quota, database events/image compatibility and Secret references. |
-| API readiness fails | Explicit schema initialization, PostgreSQL status, DB settings and application logs. |
-| Preview returns 503 | Knative readiness/URL reachability, cold start, five-second API dependency timeout and response contract. The ticket should still exist. |
-| Promotion refused | Current-generation target Deployment availability, owner/UID receipts. Still perform end-to-end candidate checks before retry. |
-| Version briefly wrong after switch | EndpointSlice convergence and existing connections. Keep both slots ready; do not rebuild to solve routing. |
-| Cleanup blocked | Active Runs/Builds, finalizers and exact owner references. Preserve evidence; do not force-delete unfamiliar objects. |
+| Wrong account/project | `oc whoami`, `oc project`; stop before applying anything. Do not use instructor credentials as a fallback. |
+| Template still contains `${API_IMAGE}` | Process the Template with the required parameter first; inspect the resulting YAML. Do not apply the Template as though it were a Deployment. |
+| Template parameter is required | Supply the successful image result/actual URL. An empty variable is not success. |
+| Role/RoleBinding denied | Ask the platform owner to review the narrow rules; do not add `edit` or cluster-admin. |
+| Secret changed but database rejects password | Retaining an initialized disk does not rotate its internal password. Recover the original matching password; do not blindly recreate credentials. |
+| Run says `AlreadyExists` | Inspect the existing execution. For a deliberate retry, use a new name in a copied file and in log/wait/result commands. |
+| PipelineRun Failed | `tkn pipelinerun describe NAME` and `logs NAME`. Check which Task failed; do not deploy its image. Waiting longer will not fix failed tests. |
+| Source fetch/install fails | Public repository/full pushed SHA, GitHub/PyPI egress and Task logs. Prepared files use specific published snapshots. |
+| Build fails | Exact Build logs, source revision/contextDir, Dockerfile/base/package access and strategy admission. |
+| Task timeout but Build still running | Inspect/cancel that exact Build separately before deleting inputs or the workflow identity. |
+| Image test cannot pull | Internal registry reference and namespace image pull permissions; not a reason to grant a privileged SCC. |
+| Database Pod Pending | PVC/storage class, quota, database image compatibility and events. |
+| API readiness fails | Schema Job completion, DB settings and PostgreSQL readiness/logs. |
+| Preview returns 503 | Knative readiness/URL reachability, cold start or invalid dependency response. Retry a safe preview GET; do not retry ticket POSTs automatically. |
+| Green accidentally gets production traffic | Stable Service selector; initial `03-network.yaml` selects blue and should not be reapplied casually. Use the explicit patch files. |
+| Version briefly old after switching | Endpoint convergence/existing connections. Inspect Service/EndpointSlices; retry a GET after convergence. Keep both slots ready. |
+| Cleanup wait times out | Active Runs/Builds and finalizers; preserve evidence. Do not strip platform finalizers or delete unrelated Pods. |
+
+The Task Template's default CLI image is a previously tested OKD 4.21 digest. For another platform, the instructor should supply a compatible approved `CLI_IMAGE` to `oc process`. Python/PostgreSQL tags and Docker base tags are development defaults; pin/maintain approved digests and dependency locks for production.
 
 ## Production gaps (intentional)
 
 - No user authentication/authorization, tenant separation, audit trail, anti-abuse controls or rate limiting. **Synthetic data only.** Public API/Knative ingress is not suitable for confidential tickets.
-- One PostgreSQL instance/PVC; no certified backups, HA, recovery or migration framework. Application and initial-schema command share a DB account for simplicity. Internal DB TLS/network isolation is not established by this example.
-- No durable email delivery. Add an outbox/queue/idempotent worker rather than turning the preview call into an unreliable side effect.
-- No ticket POST idempotency key, pagination beyond the bounded recent list, pooling or load-test claim.
-- No webhook/TriggerTemplate installation, PR trust isolation, protected approval service, signed provenance, scanning or enforced organization policy. Source tests execute repository code; only build trusted commits in this demonstration.
-- Direct dependency pins and mutable base/tool/database tags are not a full dependency lock or vulnerability certification. Pin verified digests, lock transitive dependencies and maintain upgrades for real use.
-- Blue/green switches traffic, not data. Schema compatibility, connection draining and external side effects need a deployment-specific strategy. Never claim traffic rollback reverses database writes.
+- One PostgreSQL instance/PVC; no certified backups, HA, recovery or migration framework. Application and initial-schema Job share a DB account for simplicity. Internal DB TLS/network isolation is not established here.
+- No durable email delivery. Add an outbox/queue/idempotent worker rather than turning a preview call into an unreliable side effect.
+- No ticket POST idempotency key, pagination beyond a bounded recent list, connection pooling or load-test claim.
+- No webhook installation, PR trust isolation, protected approval service, signed provenance, scanning or enforced organization policy. Only run trusted commits in this demonstration.
+- Direct dependency pins and mutable image tags are not a full lock or security certification.
+- Blue/green switches traffic, not data. Schema compatibility, connection draining and external side effects need their own strategy. Traffic rollback does not reverse database writes.
 
 ## Maintainer checks
 
-Run `make check` after changes; platform tests must stay synchronized with definitions/scripts. Re-render and review manifests whenever RBAC, Task source, image handling, ports, selectors or ownership changes. Re-run affected live acceptance after a pushed source change. Keep failed attempts and source hashes; distinguish offline validation, live negative tests, actual successful image builds and complete release rehearsals in `VERIFICATION.md`.
+Run `make check` after changes. Tests parse canonical YAML, verify recipe/identity/selector/commit relationships and compare embedded Task scripts with `deploy/` application-test/build scripts. Python is used for offline tests, **not** to generate or modify deployment manifests. Keep the two script views in sync when deliberately changing Task implementation; a regression test fails if they diverge.
+
+Rehearse changed native commands/manifests on an explicitly authorized test namespace. Record exact source commits, manifest hashes, outcomes and cleanup in `VERIFICATION.md`; old custom-CLI results do not certify the new path. Never make an offline test apply a cluster resource automatically.

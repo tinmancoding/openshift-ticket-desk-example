@@ -1,0 +1,24 @@
+# API 1.0.0 at the same published baseline commit. Use oc create, not apply, for a fresh execution.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+  name: desk-api-blue-ci
+spec:
+  pipelineRef:
+    name: desk-ci
+  taskRunTemplate:
+    serviceAccountName: desk-builder
+  taskRunSpecs:
+  - pipelineTaskName: source-tests
+    serviceAccountName: desk-test
+  - pipelineTaskName: image-tests
+    serviceAccountName: desk-test
+  timeouts:
+    pipeline: 35m0s
+  params:
+  - name: component
+    value: api
+  - name: revision
+    value: 9865bcd86d11c41a63270d52bcfe04666357b2f5

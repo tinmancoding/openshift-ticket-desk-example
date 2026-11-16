@@ -1,0 +1,46 @@
+# INITIAL routing only: stable Service selects BLUE; preview selects GREEN. Do not reapply after promotion.
+apiVersion: v1
+kind: Service
+metadata:
+  name: desk-api
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  selector:
+    app: desk-api
+    slot: blue
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: desk-preview
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  selector:
+    app: desk-api
+    slot: green
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: desk-api
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  to:
+    kind: Service
+    name: desk-api
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

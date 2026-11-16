@@ -1,0 +1,61 @@
+# Initial schema Job. Process and then CREATE; do not rerun an existing completed Job.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: desk-schema-job
+parameters:
+- name: API_IMAGE
+  description: Successful blue PipelineRun image result, including @sha256:digest
+  required: true
+objects:
+- apiVersion: batch/v1
+  kind: Job
+  metadata:
+    name: desk-schema
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    backoffLimit: 0
+    activeDeadlineSeconds: 120
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/part-of: ticket-desk
+      spec:
+        serviceAccountName: desk-app
+        automountServiceAccountToken: false
+        containers:
+        - name: schema
+          image: ${API_IMAGE}
+          command:
+          - python
+          - -m
+          - ticket_api.repository
+          env:
+          - name: DB_HOST
+            value: desk-db
+          - name: DB_NAME
+            value: desk
+          - name: DB_USER
+            value: desk
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: desk-db
+                key: password
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: '1'
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            seccompProfile:
+              type: RuntimeDefault
+        restartPolicy: Never

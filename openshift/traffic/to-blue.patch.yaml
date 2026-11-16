@@ -1,0 +1,5 @@
+# Service PATCH, not a complete resource. Use oc patch --type=merge --patch-file.
+spec:
+  selector:
+    app: desk-api
+    slot: blue

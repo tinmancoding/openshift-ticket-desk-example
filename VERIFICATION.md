@@ -46,7 +46,7 @@ At this pre-publication checkpoint, the implementation was not yet committed/pus
 
 Publication was required for complete Git-source acceptance. No binary upload, different repository or locally mocked build was substituted.
 
-## 2026-11-16 — published Git-source acceptance
+## 2026-11-16 — published Git-source acceptance (historical custom-tool path)
 
 **Result: the documented baseline → rejected contract → green preview → promotion → rollback lifecycle passed on OKD using learner09.** This is observed single-user acceptance, not a production readiness, concurrency, availability or security certification. No executable fixes or permission widening were needed during this phase.
 
@@ -100,3 +100,45 @@ Private state/logs are not published; no credentials are included here. Expected
 ### Remaining boundaries
 
 Docker Compose configuration was validated, but **Compose runtime was not exercised**. No multi-user load, HA, backups/restores, real email delivery, production authentication, database migration compatibility beyond this no-schema-change release, webhook integration or cross-cluster/image reproducibility claim is made. Mutable base/tool/database images and transitive dependencies still require an approved pin/lock/update policy for production use.
+
+## 2026-11-16 — beginner native YAML/Template path
+
+**Result: the replacement walkthrough was separately rehearsed using ordinary `oc`, `tkn` and `curl` commands with learner09.** The Python manifest generator and deployment CLI have been removed from current sources. Earlier UID-guarded custom-tool evidence above remains historical; those guards do not apply to the new native path.
+
+### Source and offline boundary
+
+- Canonical inputs are **17 source YAML files** under `openshift/`: plain identities/storage/database/network/Pipeline, four named Run snapshots, small OpenShift Templates and two traffic patches. They are hand-maintained source files, not outputs of a required generator.
+- **29 offline tests pass**, plus Python/shell syntax checks. These read/validate YAML, required parameters, source/identity/digest relationships, script synchronization, native local Template processing, beginner command-block syntax and documentation links. Native Template checks use `oc process --local=true` with a nonexistent kubeconfig; no offline test applies a resource.
+- Application and CI script bodies are unchanged. The prepared Runs intentionally fetch already-published source snapshots: baseline `9865bcd86d11c41a63270d52bcfe04666357b2f5`, green `e88bfa8912e6123f86ad7b7864f9f64b8433a125`, rejected contract `348652941ff39a62785f656612a8970b4e55eb49`. Their cluster source suites are the historical **30/31 tests**, not the new local 29-test YAML suite. This does not claim unpublished manifest changes were fetched from GitHub or tested by those source suites.
+
+### New native command rehearsal
+
+1. Verified learner09 identity/project and an initially empty namespace workload inventory. Applied a private password Secret, the canonical identity/storage/database files, then processed/applied the build/Task Templates and plain Pipeline with the native commands. PostgreSQL became Ready with a Bound PVC.
+2. Named Run **`desk-renderer-ci`** passed all three Tasks. Its logs exposed a nonfatal Tekton credential-copy warning because build/image-test Steps had no writable HOME. The Task YAML now explicitly sets `HOME=/tmp` for those Steps. This required no SCC or permission change.
+3. Created **`desk-renderer-ci-retry`** by copying the Run file and editing only its name, exercising the documented retry pattern. It passed with the updated Task definitions. **`desk-api-blue-ci`** and **`desk-api-green-ci`** also passed with those final definitions. Their exact Build commit/digest matches were checked independently. The initial successful Run/logs were retained, not overwritten.
+4. Processed the schema Template to YAML, created its named Job and observed Complete plus the expected schema log. Processed/applied the Knative renderer and both API slots using successful Run image results and the actual renderer URL.
+5. Through ordinary `curl` requests, blue reported 1.0.0, stored/read normal ticket 1 and returned its real Knative notification preview. Green preview reported 1.1.0, read ticket 1, stored urgent ticket 2 and returned its preview; the public production URL still reported blue.
+6. Both exact YAML `oc patch --patch-file` commands worked: green promotion accepted an urgent production ticket; blue rollback returned version 1.0.0 and could still read the green-created urgent ticket. Traffic changes reused the same image digests and no schema change.
+7. The native renderer Pod inventory reached zero while idle; the next ticket-preview GET returned a valid result and the inventory showed a renderer Pod again. This is an observation on this platform, not a timing or availability guarantee.
+8. Optional **`desk-api-rejected-ci`** failed on the real urgent-ticket assertion (`400 != 201`), with build/image Tasks skipped and **no new Build**. The Task log and failed Run were retained.
+9. Executed the native cleanup guide, including the retry Run's file. **Default cleanup retained both PVC and Secret**, then the separately documented destructive step removed them. Final metadata-only audit of **26 resource kinds** found no `desk-*`/example-label residue and zero workload Pods. No other learner, terminal, quota, operator or platform policy was changed.
+
+### Final native-path artifact identity
+
+| Deployed artifact | Image SHA256 digest |
+| --- | --- |
+| Renderer from successful retry | `04881d54398f4d7a7e8e6ae7b3837a62924383ea729df78e530f60319358f1c2` |
+| API blue | `26891d7e950303d28e2ec588189ca2e1f4b2225b3ebab150323859ce2d4e0d68` |
+| API green | `43677e74d84067d5f05d00d843407a47b8c85cd555cac2f151e3357b8d326eb0` |
+
+Builds were `desk-renderer-2`, `desk-api-1` and `desk-api-2` respectively. Mutable build inputs can change bytes between rehearsals; these digests identify this attempt, not reusable permanent images after cleanup.
+
+Ignored evidence: `build/native-{run-evidence,manifest-hashes,release-summary}.json`, native Run/Build/log files, HTTP responses and `build/native-cleanup-{retain-data,delete-data}.log` / `build/native-cleanup-audit.json`. The private `.local/` Secret and processed manifests remain ignored and are not included in this verification document.
+
+**Limits:** this establishes the new prepared native workflow on learner09, not a complete rehearsal of every optional fork/authentication instruction, another cluster/CLI image, Compose runtime or production capabilities. At this rehearsal checkpoint, the native source/doc changes were still local; exact published application snapshots were used as designed.
+
+## Editorial follow-up after independent reviews
+
+Two independent read-only reviewers checked the current beginner guides. Neither executed examples/tests, contacted the cluster or changed files. Their accepted findings were then applied: first-install versus retained-data instructions now precede the Secret copy; password syntax is explicit; the fork follow-up stays in the same checkout/installation; optional local checks are separate; custom/retry execution cleanup and local password-file retention are covered. Inspection pauses, vocabulary, Job retry guidance and stale current-tense test/tool descriptions were also corrected.
+
+This follow-up changes documentation and its text-regression assertions only. Application code, CI script bodies and the 17 live-rehearsed YAML files are unchanged. Local documentation links and Bash block syntax were checked statically; no test suite or cluster exercise was rerun. Earlier runtime results remain historical evidence, not a new execution or a claim that the full optional fork path has now been rehearsed. The reviewers have not re-approved this revised text.

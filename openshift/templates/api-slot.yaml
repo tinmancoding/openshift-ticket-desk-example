@@ -1,0 +1,84 @@
+# Same API shape for two slots. Process to a named blue/green YAML file before applying.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: desk-api-slot
+parameters:
+- name: SLOT
+  description: Use blue for production baseline or green for the candidate
+  required: true
+  value: blue
+- name: API_IMAGE
+  description: Successful API PipelineRun image result, including @sha256:digest
+  required: true
+- name: RENDERER_URL
+  description: Actual Knative renderer status.url, including its scheme
+  required: true
+objects:
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: desk-api-${SLOT}
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: desk-api
+        slot: ${SLOT}
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/part-of: ticket-desk
+          app: desk-api
+          slot: ${SLOT}
+      spec:
+        serviceAccountName: desk-app
+        automountServiceAccountToken: false
+        containers:
+        - name: api
+          image: ${API_IMAGE}
+          ports:
+          - containerPort: 8080
+          env:
+          - name: DB_HOST
+            value: desk-db
+          - name: DB_NAME
+            value: desk
+          - name: DB_USER
+            value: desk
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: desk-db
+                key: password
+          - name: RENDERER_URL
+            value: ${RENDERER_URL}
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: '1'
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            seccompProfile:
+              type: RuntimeDefault

@@ -1,0 +1,87 @@
+# Apply once in your assigned project. CI can build, not deploy or promote.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: desk-app
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: desk-test
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: desk-builder
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: desk-builder
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+rules:
+- apiGroups:
+  - build.openshift.io
+  resources:
+  - buildconfigs
+  resourceNames:
+  - desk-api
+  - desk-renderer
+  verbs:
+  - get
+- apiGroups:
+  - build.openshift.io
+  resources:
+  - buildconfigs/instantiate
+  resourceNames:
+  - desk-api
+  - desk-renderer
+  verbs:
+  - create
+- apiGroups:
+  - build.openshift.io
+  resources:
+  - builds
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - build.openshift.io
+  resources:
+  - builds/log
+  verbs:
+  - get
+- apiGroups:
+  - image.openshift.io
+  resources:
+  - imagestreams
+  resourceNames:
+  - desk-api
+  - desk-renderer
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: desk-builder
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+subjects:
+- kind: ServiceAccount
+  name: desk-builder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: desk-builder

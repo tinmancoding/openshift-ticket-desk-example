@@ -1,234 +1,477 @@
-# GitHub to a controlled release
+# Walkthrough: build, test and release Ticket Desk
 
-This is an opt-in walkthrough, not a run-all script. Start from a clean **`main` baseline (API 1.0.0)**; `feature/urgent-tickets` is the already-completed 1.1.0 reference solution. Preserve any local edits before changing branches. Read the architecture first. Do not continue after a failed command. Use only your assigned isolated namespace and synthetic data. Keep your Git checkout, CLI state and evidence until cleanup is audited.
+**Start here.** You will apply readable YAML, run a Pipeline, and switch a Service between two versions. There is no custom deployment CLI, manifest generator or required Python command on your workstation.
 
-## 1. Platform prerequisites
+Use the repository's `main` branch. This first pass uses two **already published application commits**: API 1.0.0 (blue) and API 1.1.0 (green, adding urgent tickets). You do not need a GitHub fork or push permission to complete it. [Releasing your own API change](your-own-release.md) is a separate follow-up.
 
-You need Bash, Python 3.12+, Git, `oc`, and optionally `tkn` for archived Task logs. The CLI uses the current kubeconfig, but always supplies an explicit namespace. Log in using your own authorized account before beginning. No step installs operators or grants a privileged SCC.
+You apply the YAML from this checkout. The prepared PipelineRuns fetch the fixed application commit SHAs recorded in `openshift/runs/`; they do **not** build your working tree or a moving `main` branch.
 
-The cluster must already provide:
+## What you will have at the end
 
-- OpenShift/OKD Git-source Docker builds, ImageStreams and an internal registry;
-- Tekton `tekton.dev/v1` and Knative Serving `serving.knative.dev/v1`;
-- dynamic RWO PVC provisioning, usable PostgreSQL image, ingress and trusted TLS;
-- namespace permission to create the listed workloads, BuildConfigs, ServiceAccounts and narrow Role/RoleBinding;
-- sufficient quota for PostgreSQL, blue/green API Pods, Knative renderer and **sequential** build/Task Pods;
-- egress to public GitHub, image registries and Python package repositories.
+```text
+GitHub source -> Tekton tests -> OpenShift BuildConfig -> tested image
+
+client -> API Service -> blue 1.0.0 OR green 1.1.0 -> PostgreSQL
+                                      |
+                                      +-> Knative notification renderer
+```
+
+Both API versions use the same database. You will test green before switching production traffic, then switch back to blue. The renderer produces a notification **preview**; no email is sent.
+
+## Before you start
+
+You need a **Bash-compatible terminal**, Git, `oc`, `tkn` (the Tekton CLI), `curl`, an editor, and an account in a prepared OpenShift/OKD cluster. On Windows, use WSL or an instructor-provided Bash/browser terminal, not PowerShell or Command Prompt.
+
+The instructor should confirm these cluster requirements before you start:
+
+- Working Git/Docker BuildConfigs, an internal registry, Tekton, Knative Serving, dynamic storage and ingress.
+- Builds and Tasks can download public GitHub source, Python packages, and images from Docker Hub and Quay.
+- Your terminal can reach the cluster API and the application's URLs, using trusted certificates.
+
+Ask the instructor if anything is unavailable. This walkthrough does not install operators or change cluster policy.
+
+Use **only synthetic tickets in your assigned project**. This example has no login or access controls. Do not use a shared production namespace.
+
+Clone this repository if you have not already done so, then enter its root:
 
 ```bash
-# Example authorized test namespace. Replace these for your own installation.
-export DESK_NAMESPACE=learner09
-export DESK_IDENTITY=learner09
+git clone https://github.com/tinmancoding/openshift-ticket-desk-example.git
+cd openshift-ticket-desk-example
+```
+
+If the directory already exists, use that checkout instead of cloning over it. All relative file paths below assume you stay in this directory. Keep one main terminal open so its variables remain available; a second terminal is used only for port forwarding.
+
+### Words you will need
+
+| Word | Meaning here |
+| --- | --- |
+| Project / namespace | Your isolated workspace in the cluster. |
+| YAML manifest | A file describing a resource you want the cluster to create. |
+| Deployment / Pod | A running application recipe / a running copy of its container. |
+| Service / selector | A stable internal address / labels identifying the Pods it sends requests to. |
+| Route | OpenShift's public URL for an ordinary Service. |
+| Secret / PVC | Password storage / a request for persistent disk storage. |
+| BuildConfig / Build | An image-build recipe / one execution of it. |
+| Task / Pipeline / PipelineRun | Reusable work / its order / one actual execution. |
+| ImageStream / tag | OpenShift's named record of images / a movable pointer such as `latest`. |
+| Image digest | `sha256:` followed by 64 hexadecimal characters, identifying a specific image. A full image reference looks like `registry/repository@sha256:…`; unlike a `latest` tag, it does not move. |
+| Knative Service / Revision | An HTTP application managed by Knative / one immutable version of its configuration. |
+
+### The four file operations
+
+| Command | When to use it |
+| --- | --- |
+| `oc apply -f FILE.yaml` | Create or update a normal resource definition. |
+| `oc process -f TEMPLATE.yaml -p NAME=value -o yaml` | Fill in an OpenShift Template's parameters and print normal YAML. It does **not** deploy it. |
+| `oc create -f RUN.yaml` | Start a new named execution, such as a PipelineRun or Job. |
+| `oc patch service NAME --type=merge --patch-file FILE.yaml` | Change only the fields shown in a patch file. |
+
+A Template has `kind: Template`, a `parameters` list, and `objects`. `${API_IMAGE}` in a Template is filled by `oc process`. `$(params.revision)` in a Tekton Task is different: Tekton fills it when the Task runs.
+
+We save processed YAML in ignored **`.local/`** so you can inspect exactly what will be applied. The output may use a normal Kubernetes `kind: List` wrapper around its objects; that is not another Template. Never run `oc apply -f openshift/ --recursive`: that directory intentionally contains different file kinds, optional failures and traffic-switch patches.
+
+## 1. Choose and check your project
+
+```bash
+# Confirm that you are logged in as yourself.
 oc whoami
-oc get namespace "$DESK_NAMESPACE"
-oc api-resources --api-group=build.openshift.io
-oc api-resources --api-group=tekton.dev
-oc api-resources --api-group=serving.knative.dev
-oc get quota,limitrange -n "$DESK_NAMESPACE"
-oc auth can-i create buildconfigs.build.openshift.io -n "$DESK_NAMESPACE"
-oc auth can-i create roles.rbac.authorization.k8s.io -n "$DESK_NAMESPACE"
-oc auth can-i create rolebindings.rbac.authorization.k8s.io -n "$DESK_NAMESPACE"
+
+# Replace YOUR_PROJECT with the project assigned to you.
+oc project YOUR_PROJECT
+
+# Confirm the selected project and inspect its current workloads.
+oc project
+oc get deployment,service,route,bc,is,pvc
+oc get quota,limitrange
 ```
 
-The tools reject a different `oc whoami` identity. They never switch the current project or use instructor credentials as a fallback. Reserve all `desk-*` names. Existing unowned/replaced resources cause a refusal, not silent adoption.
+**Stop if the project or identity is wrong.** `oc project` selects the project for subsequent commands in this kubeconfig. Later commands omit `-n` to stay readable; they operate in this selected project.
 
-## 2. Publish source and review definitions
+This example uses fixed **`desk-*`** names. If they already exist and you cannot confirm they are your own earlier attempt, stop and ask the instructor. `oc apply` can update an existing object; labels alone do not prove ownership.
 
-Clone your own repository/fork. Push the implementation before using it as a build source. Do not put access tokens into repository URLs, Task parameters, files or evidence. This example supports public HTTPS GitHub source; private source needs a separately reviewed credential design.
+**Good looks like:** your own identity/project and enough available quota. The instructor should check capacity for a database, two API Pods, a renderer and sequential build/Task Pods.
+
+## 2. Create the database password and application identities
+
+**Choose the right path before copying anything:**
+
+- **First installation:** create the private Secret file with the commands below.
+- **Restarting with retained data:** reuse your existing `.local/database-secret.yaml`. **Skip the copy and password-editing steps.** Do not replace it or choose a new password for the retained disk. If the matching file is missing, stop and ask the instructor before changing the Secret.
+
+For a first installation only:
 
 ```bash
-REPOSITORY=https://github.com/tinmancoding/openshift-ticket-desk-example.git
-BASE_SHA=$(git rev-parse HEAD)
-# Verify this exact commit is already pushed/reachable in REPOSITORY.
-git status --short
-git remote -v
+mkdir -p .local
+cp openshift/database-secret.example.yaml .local/database-secret.yaml
+chmod 600 .local/database-secret.yaml
 ```
 
-Resolve an approved OpenShift CLI image **by digest**. For example, where your platform publishes this ImageStreamTag:
+Open **`.local/database-secret.yaml`** in your editor. Replace `REPLACE_WITH_A_LONG_RANDOM_PASSWORD` with a random password of at least 32 characters. For this exercise, use only letters (`A–Z`, `a–z`) and digits (`0–9`), **starting with a letter**. This avoids YAML quoting rules. Keep `password: ` and its indentation unchanged.
+
+Do not share/commit this file or print its contents in a recording. `stringData` accepts text; you do not need to base64-encode the password.
+
+Once you have the correct private file—new or reused—apply it and the prepared identities:
 
 ```bash
-CLI_IMAGE=$(oc get istag cli:latest -n openshift -o jsonpath='{.image.dockerImageReference}')
-# Inspect the value; it must contain a full @sha256:digest and be pullable by Task Pods.
-printf '%s\n' "$CLI_IMAGE"
-mkdir -p build
-python3 scripts/desk.py --namespace "$DESK_NAMESPACE" render \
-  --repository "$REPOSITORY" --cli-image "$CLI_IMAGE" > build/foundation.json
+oc apply -f .local/database-secret.yaml
+oc apply -f openshift/00-identities.yaml
 ```
 
-Read `build/foundation.json`: database/PVC, token-free identities, two Git BuildConfigs, namespace build Role/RoleBinding, three Tasks and Pipeline. Rendering does not contact a cluster or generate a Secret. The Python task and PostgreSQL image have configurable development tags; an instructor/production adaptation should supply approved digests through `--python-image` and `--database-image` on both render and setup. Dockerfile base tags are separate and should also be pinned for reproducible delivery.
+**What just happened:** `desk-app` is the application identity, `desk-test` runs token-free tests, and `desk-builder` can start the two named BuildConfigs. Its Role does **not** allow deploying applications, changing traffic or reading Secrets. If this Role/RoleBinding is denied, ask the instructor; do not grant `edit` or cluster-admin.
 
-Do not apply the render-only output manually: its owner marker is not an installation receipt. Use the ownership-aware setup command after review. You can use server dry-run to check admission without persisting it, but that is not runtime acceptance.
+**Good looks like:** one Secret, three ServiceAccounts and the narrow namespace Role/RoleBinding created. On a retry, do not generate/change the password while retaining an existing database disk.
 
-## 3. Create the foundation
+## 3. Start PostgreSQL with persistent storage
 
-Define a convenience function that still requires the explicit namespace confirmation on every mutation:
+Read these files before applying them:
+
+- `openshift/01-storage.yaml`: a 1-GiB PVC named `desk-db`.
+- `openshift/02-database.yaml`: one PostgreSQL Deployment and its internal Service. The password comes from the Secret, not a literal Deployment value.
 
 ```bash
-desk() { python3 scripts/desk.py --confirm "$DESK_NAMESPACE" "$@"; }
-desk setup --repository "$REPOSITORY" --cli-image "$CLI_IMAGE"
+oc apply -f openshift/01-storage.yaml
+oc apply -f openshift/02-database.yaml
+oc rollout status deployment/desk-db --timeout=300s
+oc get pvc desk-db
 ```
 
-Setup creates a private random database password in an OpenShift Secret and ignored mode-0600 local state. It never prints the Secret. Protect `.state/` like credentials; do not commit/copy it into source archives. The CLI records owner labels and exact UIDs for cleanup. Retain that state; losing it intentionally prevents the tool from claiming ownership of existing resources.
+**Good looks like:** Deployment successfully rolled out; PVC is `Bound`. On a first installation, the application's table does not exist yet; we will create it with a Job after building the API image. If you kept an earlier database disk, its table and tickets may already exist.
 
-**Expected:** PostgreSQL Ready with a Bound 1-GiB PVC; two BuildConfigs with `source.type: Git`, per-component contexts and `triggers: []`; no image build merely from applying definitions. The API table is not initialized yet. The separate schema Job below is intentional.
+If storage is Pending or the rollout times out, inspect `oc describe pvc desk-db` and `oc describe deployment desk-db`. Do not continue to the application steps until this is fixed.
 
-## 4. Run CI at one exact Git commit
+## 4. Create the two image-build recipes
+
+Open `openshift/templates/builds.yaml`. Notice the two Git source contexts: `apps/api` and `apps/renderer`. Both use their existing Dockerfiles and write to separate ImageStreams. `triggers: []` means applying these definitions does not start a build.
 
 ```bash
-# Sequentially test source, build via BuildConfig and test the actual image.
-RENDERER_IMAGE=$(desk build renderer "$BASE_SHA")
-API_BLUE_IMAGE=$(desk build api "$BASE_SHA")
-printf '%s\n' "$RENDERER_IMAGE" > build/renderer-image.txt
-printf '%s\n' "$API_BLUE_IMAGE" > build/api-blue-image.txt
+# Fill the Template's default public GitHub repository value.
+oc process -f openshift/templates/builds.yaml -o yaml > .local/builds.yaml
+
+# Inspect .local/builds.yaml in your editor, then create the recipes.
+oc apply -f .local/builds.yaml
+oc get bc
 ```
 
-Only continue if **both commands succeed** and both outputs contain immutable `@sha256:…` references. In Bash, check command failures before reading old files or reusing old variables. No later command should infer approval from `latest`.
+**Good looks like:** `desk-api` and `desk-renderer` BuildConfigs exist. Nothing has been deployed or built by this step.
 
-Follow a run independently if desired:
+The source repository is already configured for this walkthrough. If using a fork later, change the `GITHUB_REPOSITORY` parameter consistently in both the build and Task Templates; see [your own release](your-own-release.md).
 
-```bash
-oc get pipelineruns.tekton.dev -n "$DESK_NAMESPACE"
-# Replace RUN with its actual name.
-# tkn pipelinerun logs RUN -f -n "$DESK_NAMESPACE"
+## 5. Create the Tekton workflow
+
+Read the short **`openshift/ci/pipeline.yaml`** first. It names three Tasks in this order:
+
+```text
+source-tests -> build -> image-tests
 ```
 
-Each source Task downloads the repository at `BASE_SHA`, runs all required tests and gates the Build. The Build task asks OpenShift to fetch the same Git commit, waits for that exact Build, checks its recorded commit and returns its output digest. The image Task then tests that digest. No Task builds with Buildah, uploads local files or deploys an application.
+1. Test the source at an exact published commit.
+2. Ask the matching Git-source BuildConfig to build **that same commit**.
+3. Run a contract check inside **that exact built image**.
 
-The CLI archives final Run/Build JSON in `.state/desk-ci-*/` and logs if `tkn` is available. Successful release digests are recorded in private namespace state. Deployment commands refuse an image that has no successful whole-Run record there. This is a classroom safeguard, not a cryptographically signed approval system.
-
-### Optional rejection demonstration
-
-On a separate Git branch, add a deliberately failing unit test, commit/push it, then invoke `desk build api FAILED_SHA`. **Expected:** source-tests fails; build and image-tests do not run. Inspect the Run and verify no new application Build was instantiated. Restore the passing source and push before proceeding. Do not weaken/remove real tests to make the release green.
-
-## 5. Initialize the schema and deploy the renderer
+The longer `openshift/templates/tasks.yaml` contains those Task implementations. You do not need to edit their scripts for this first pass. Python in a Task tests the Python application; it does not generate or modify Kubernetes manifests.
 
 ```bash
-# The initial migration is idempotent CREATE TABLE, not a full migration system.
-desk schema --image "$API_BLUE_IMAGE"
-RENDERER_URL=$(desk renderer --image "$RENDERER_IMAGE")
+oc process -f openshift/templates/tasks.yaml -o yaml > .local/tasks.yaml
+oc apply -f .local/tasks.yaml
+oc apply -f openshift/ci/pipeline.yaml
+oc get tasks.tekton.dev,pipelines.tekton.dev
+```
+
+**Good looks like:** three Tasks and one Pipeline exist. Definitions are not executions: no PipelineRun has started yet. The Task Template includes a previously tested OKD 4.21 CLI image digest; the instructor must check compatibility and may override `CLI_IMAGE` for another cluster.
+
+## 6. Build and test the renderer
+
+Open **`openshift/runs/renderer-ci.yaml`**. Its name is `desk-renderer-ci`; its component is `renderer`; its revision is a full published Git commit SHA. The file selects who runs each Task as well.
+
+**If a Run already exists:** inspect that execution instead of treating it as a new attempt. For a deliberate retry, copy its file into `.local/` and edit `metadata.name` to a new unused name. For example, copy the renderer file to `.local/renderer-ci-retry.yaml` and name its Run `desk-renderer-ci-retry`. Then use `oc create -f .local/renderer-ci-retry.yaml`—not the original file. Use the new Run name in every log, wait, result and evidence command, and keep the copied file for cleanup. Do not overwrite a failed execution's evidence.
+
+For a new installation, start the prepared Run:
+
+```bash
+# Create a new execution; do not apply a Run as though it were a recipe.
+oc create -f openshift/runs/renderer-ci.yaml
+
+# Watch the three Tasks' output.
+tkn pipelinerun logs desk-renderer-ci -f
+
+# Wait for whole-workflow success, not just image-build completion.
+oc wait pipelinerun/desk-renderer-ci --for=condition=Succeeded --timeout=35m
+```
+
+**Good looks like:** tests pass, a Build completes, built-image checks pass, and `oc wait` reports `condition met`. Unit tests deliberately exercise some error paths, so individual log lines can contain `ERROR` while their assertions pass; require the test runner's final `OK` and the whole Run's success, not just a keyword in a log. Inspect `tkn pipelinerun describe desk-renderer-ci` if it fails. A failed Run will not turn successful just because you wait longer. Stop here on failure.
+
+Now save its approved image reference:
+
+```bash
+RENDERER_IMAGE=$(oc get pipelinerun desk-renderer-ci -o jsonpath='{.status.results[?(@.name=="image")].value}')
+printf '%s\n' "$RENDERER_IMAGE"
+```
+
+`NAME=$(command)` stores a command's output in a shell variable. This fixed JSONPath expression reads the result named `image` from the Run. You do not need to invent a query: compare the printed value with **Results** in `tkn pipelinerun describe`.
+
+**Expected:** a full registry image reference containing `@sha256:` followed by 64 hexadecimal characters. An empty value or `latest` is not an approved artifact. Only read/use results after the **whole Run** succeeds; a failed image test may still leave a built image in the registry.
+
+## 7. Build and test blue API 1.0.0
+
+The API Run uses the same baseline commit, but component `api` and a different execution name.
+
+```bash
+oc create -f openshift/runs/api-blue-ci.yaml
+tkn pipelinerun logs desk-api-blue-ci -f
+oc wait pipelinerun/desk-api-blue-ci --for=condition=Succeeded --timeout=35m
+
+# Save the image only after the Run succeeds.
+API_BLUE_IMAGE=$(oc get pipelinerun desk-api-blue-ci -o jsonpath='{.status.results[?(@.name=="image")].value}')
+printf '%s\n' "$API_BLUE_IMAGE"
+```
+
+**Good looks like:** whole-Run success and another immutable image reference. No application Deployment follows the ImageStream's moving `latest` tag automatically.
+
+If `oc create` reports `AlreadyExists`, use the [named retry procedure in step 6](#6-build-and-test-the-renderer). A completed Run is not rerun by applying or creating its definition again.
+
+## 8. Create the initial table with a Job
+
+A Job runs one finite operation. This one uses the approved API image to initialize the table; it does not start a web server.
+
+```bash
+oc process -f openshift/templates/schema-job.yaml \
+  -p API_IMAGE="$API_BLUE_IMAGE" -o yaml > .local/schema-job.yaml
+
+# Read the processed file, then start this execution.
+oc create -f .local/schema-job.yaml
+oc wait job/desk-schema --for=condition=Complete --timeout=150s
+oc logs job/desk-schema
+```
+
+**Expected log:** `Ticket schema initialized (idempotent initial schema only).` If the Job fails, inspect its logs and database settings. Do not continue with an uninitialized table. This is initial setup, not a production migration framework.
+
+**Retrying a failed Job:** fix the cause and save the failed Job's logs first. Copy `.local/schema-job.yaml` to `.local/schema-job-retry.yaml`. In that copy, change the **Job's** `metadata.name` from `desk-schema` to the unused name `desk-schema-retry`; leave the other fields unchanged. Then run:
+
+```bash
+oc create -f .local/schema-job-retry.yaml
+oc wait job/desk-schema-retry --for=condition=Complete --timeout=150s
+oc logs job/desk-schema-retry
+```
+
+Only continue after that new Job completes. Keep both files/logs and include the retry file in cleanup. An already-completed Job is not rerun by issuing `create` again.
+
+## 9. Deploy the renderer with Knative
+
+```bash
+oc process -f openshift/templates/renderer.yaml \
+  -p RENDERER_IMAGE="$RENDERER_IMAGE" -o yaml > .local/renderer.yaml
+```
+
+Open `.local/renderer.yaml`. Check that the Knative Service is named `desk-renderer`, its image matches the successful renderer Run's digest, and its container port is 8080. Then apply it:
+
+```bash
+oc apply -f .local/renderer.yaml
+oc wait services.serving.knative.dev/desk-renderer --for=condition=Ready --timeout=300s
+
+# Store its actual URL for the API's configuration.
+RENDERER_URL=$(oc get services.serving.knative.dev desk-renderer -o jsonpath='{.status.url}')
 printf '%s\n' "$RENDERER_URL"
 ```
 
-The renderer command waits for Knative Ready and prints its actual status URL. Use that URL as the API's dependency; do not invent a hostname or assume HTTPS. The API calls it from inside the cluster. If the platform's external URL is not reachable internally, resolve supported internal ingress with the platform owner rather than modifying arbitrary system resources.
+**Good looks like:** Knative Ready and a nonempty URL, including `http://` or `https://` as supplied by your platform. Keep that scheme. The API calls this URL from inside the cluster; a policy/ingress problem requires instructor help, not disabled TLS verification.
 
-Inspect its Revision and image:
+Knative runs this **existing image** as an immutable Revision; it does not rebuild it. Only the renderer is managed by Knative. PostgreSQL and the API remain ordinary Deployments.
 
-```bash
-oc get services.serving.knative.dev/desk-renderer -n "$DESK_NAMESPACE"
-oc get revisions.serving.knative.dev -n "$DESK_NAMESPACE" \
-  -l serving.knative.dev/service=desk-renderer
-```
-
-## 6. Bring up blue and exercise a real ticket
+## 10. Deploy blue and create the public API address
 
 ```bash
-desk slot blue --image "$API_BLUE_IMAGE" --renderer-url "$RENDERER_URL"
-desk network
-API_URL=https://$(oc get route/desk-api -n "$DESK_NAMESPACE" -o jsonpath='{.spec.host}')
-python3 scripts/smoke.py --url "$API_URL" --expected-version 1.0.0 --confirm-create
+oc process -f openshift/templates/api-slot.yaml \
+  -p SLOT=blue -p API_IMAGE="$API_BLUE_IMAGE" -p RENDERER_URL="$RENDERER_URL" \
+  -o yaml > .local/api-blue.yaml
 ```
 
-The network command creates stable blue and preview green Services and an edge-TLS API Route. On reruns it **retains** owned routing rather than accidentally promoting/rolling back. Green has no endpoints yet. Use trusted ingress certificates; do not hide CA issues with `curl -k`.
-
-**Expected:** API reports 1.0.0; a normal-priority ticket is stored/read; its preview includes the same ticket ID and title. Keep the printed `ticket_id` as `OLD_TICKET_ID` for persistence checks. The smoke script creates synthetic data and retries only safe preview GETs when a cold renderer returns a temporary 503.
+Open `.local/api-blue.yaml`. Check the Deployment name `desk-api-blue`, Pod label `slot: blue`, tested blue image digest, and renderer URL. Then apply it:
 
 ```bash
-OLD_TICKET_ID=1  # replace with the ID actually printed by your smoke run
+oc apply -f .local/api-blue.yaml
+oc rollout status deployment/desk-api-blue --timeout=300s
+
+# INITIAL network setup: stable Service selects blue, preview selects green.
+oc apply -f openshift/03-network.yaml
+oc get route desk-api
 ```
 
-## 7. Make a realistic backwards-compatible release
-
-Create a feature branch in a repository where you have push permission:
+**Important:** do not reapply `03-network.yaml` after promotion unless you deliberately want its blue selector restored. Later traffic changes use the small patch files instead.
 
 ```bash
-git switch -c feature/my-urgent-tickets
+# Read the Route's host and construct its HTTPS URL.
+API_HOST=$(oc get route desk-api -o jsonpath='{.spec.host}')
+API_URL="https://$API_HOST"
+curl --fail-with-body -sS "$API_URL/version"
 ```
 
-In `apps/api/ticket_api/__init__.py`:
+**Expected:** `{"component":"api","version":"1.0.0"}` (field order may differ). Use trusted ingress certificates; do not add `-k` to hide certificate problems.
 
-- change `VERSION = "1.0.0"` to `VERSION = "1.1.0"`;
-- add `"urgent"` to `PRIORITIES`, keeping `normal` and `high`.
-
-Add a test method to `ApiTests` in `tests/test_apps.py`:
-
-```python
-    def test_urgent_ticket(self):
-        response = self.client.post('/tickets', json={'title': 'System unavailable', 'priority': 'urgent'})
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.get_json()['priority'], 'urgent')
-```
-
-This requires no table change: priority is already a short string. Blue can read urgent tickets, even though it rejects creating them. We deliberately avoid mixing a traffic-switch exercise with an unsafe incompatible database migration.
+## 11. Create a ticket and request its preview
 
 ```bash
-make check
-git diff --check
-git diff
-git add apps/api/ticket_api/__init__.py tests/test_apps.py
-git commit -m "Support urgent tickets without changing existing clients"
-git push -u origin feature/my-urgent-tickets
-GREEN_SHA=$(git rev-parse HEAD)
-API_GREEN_IMAGE=$(desk build api "$GREEN_SHA")
-desk slot green --image "$API_GREEN_IMAGE" --renderer-url "$RENDERER_URL"
+curl --fail-with-body -sS "$API_URL/tickets" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Printer is offline","priority":"normal"}'
 ```
 
-The renderer did not change; do not rebuild/redeploy it merely because the API changed. Green uses the same database and renderer URL as blue.
-
-## 8. Verify green before production traffic
-
-Keep this port-forward running in one terminal:
+**Expected:** a stored ticket containing `id`, `title`, `priority` and `created_at`. Record its **actual** ID. It is often 1 in a fresh database, but retained data can change that.
 
 ```bash
-oc port-forward -n "$DESK_NAMESPACE" service/desk-preview 18080:8080
+TICKET_ID=1  # replace 1 with the ID in YOUR response
+curl --fail-with-body -sS "$API_URL/tickets/$TICKET_ID"
+curl --fail-with-body -sS "$API_URL/tickets/$TICKET_ID/notification-preview"
 ```
 
-In another terminal in the repository, substitute your earlier ticket ID:
+**Expected:** the same stored ticket, then a preview whose `ticket_id` matches and whose subject includes `Printer is offline`. That proves the running API can read PostgreSQL and call the Knative renderer—not merely that a readiness probe passed.
+
+If a cold renderer causes a temporary 503, retry the **preview GET** after a few seconds. Do not automatically retry the ticket-creation POST: it could create a duplicate.
+
+## 12. Build green API 1.1.0 and keep it isolated
+
+The prepared green Run selects a published commit that accepts `urgent` priority. Existing `normal`/`high` requests still work. The database schema is unchanged. You can inspect the [source change](https://github.com/tinmancoding/openshift-ticket-desk-example/commit/e88bfa8912e6123f86ad7b7864f9f64b8433a125) without implementing it yet. If this Run already exists, follow the [step 6 retry procedure](#6-build-and-test-the-renderer) with a new name.
 
 ```bash
-python3 scripts/smoke.py --url http://127.0.0.1:18080 \
-  --expected-version 1.1.0 --priority urgent --existing-id 1 --confirm-create
+oc create -f openshift/runs/api-green-ci.yaml
+tkn pipelinerun logs desk-api-green-ci -f
+oc wait pipelinerun/desk-api-green-ci --for=condition=Succeeded --timeout=35m
+
+# Stop on failure; otherwise record its exact tested image.
+API_GREEN_IMAGE=$(oc get pipelinerun desk-api-green-ci -o jsonpath='{.status.results[?(@.name=="image")].value}')
+printf '%s\n' "$API_GREEN_IMAGE"
+
+oc process -f openshift/templates/api-slot.yaml \
+  -p SLOT=green -p API_IMAGE="$API_GREEN_IMAGE" -p RENDERER_URL="$RENDERER_URL" \
+  -o yaml > .local/api-green.yaml
 ```
 
-**Expected:** green reports 1.1.0, reads the earlier blue ticket, persists an urgent ticket and gets its renderer preview. Keep that urgent ticket's ID. Production must still report blue:
+Open `.local/api-green.yaml`. Check the Deployment name `desk-api-green`, Pod label `slot: green`, tested green image digest, and the same renderer URL used by blue. Then apply it:
+
+```bash
+oc apply -f .local/api-green.yaml
+oc rollout status deployment/desk-api-green --timeout=300s
+```
+
+**Good looks like:** green successfully rolled out. Production must still be blue:
 
 ```bash
 curl --fail-with-body -sS "$API_URL/version"
-oc describe svc desk-api -n "$DESK_NAMESPACE"
+oc describe service desk-api
 ```
 
-Stop the forward with Ctrl+C. A candidate test can write to the shared database even before promotion; isolation of traffic is not isolation of data. Use synthetic records only.
+Expect version **1.0.0** and selector **`app=desk-api,slot=blue`**. The green image has not been promoted just because it was built or deployed.
 
-## 9. Promote and roll back without rebuilding
+## 13. Test green through the preview Service
+
+In a **second terminal**, select the same project, then keep this command running:
 
 ```bash
-# Explicit human approval after reviewing candidate evidence.
-desk promote green
-oc describe svc desk-api -n "$DESK_NAMESPACE"
-python3 scripts/smoke.py --url "$API_URL" --expected-version 1.1.0 \
-  --priority urgent --existing-id "$OLD_TICKET_ID" --confirm-create
-
-# Rollback changes the same Service selector, not image tags or Deployment history.
-desk promote blue
-oc describe svc desk-api -n "$DESK_NAMESPACE"
-python3 scripts/smoke.py --url "$API_URL" --expected-version 1.0.0 \
-  --existing-id "$OLD_TICKET_ID" --confirm-create
+oc project YOUR_PROJECT
+oc port-forward service/desk-preview 18080:8080
 ```
 
-Endpoint convergence is asynchronous. If a version check briefly sees the old slot, inspect EndpointSlices and retry after convergence. Do not change expected versions to disguise a failed release. Also read the urgent ticket through blue after rollback: it remains stored. A rollback does not erase data or reverse a migration. New urgent POSTs to blue should be rejected with 400.
+Port forwarding maps your second terminal's local port 18080 to green's port 8080. If working in browser terminals, both terminals must share the same network environment for localhost access; otherwise use an instructor-approved preview endpoint.
 
-`rollout undo` is not the correct routing rollback: the release changed a Service selector, not either Deployment template. Keep both slots ready until rollback has been verified. The CLI checks availability before selecting a slot; it does not automatically substitute a smoke-test approval.
-
-## 10. Observe Knative independently
-
-Stop sending requests to the renderer/API preview endpoint. After the configured idle window, inspect:
+Back in the **original terminal**, where your variables still exist:
 
 ```bash
-oc get pods -n "$DESK_NAMESPACE" -l serving.knative.dev/service=desk-renderer
-oc get deployments -n "$DESK_NAMESPACE"
+curl --fail-with-body -sS http://127.0.0.1:18080/version
+curl --fail-with-body -sS "http://127.0.0.1:18080/tickets/$TICKET_ID"
+curl --fail-with-body -sS http://127.0.0.1:18080/tickets \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Checkout is unavailable","priority":"urgent"}'
 ```
 
-Whether scale-to-zero occurs depends on policy and traffic. PostgreSQL and both API slots remain ordinary running Deployments. Request another ticket preview to observe wake-up. A new API release/selector does not create a new renderer Revision; changing the renderer template/image would.
+**Expected:** green reports **1.1.0**, can read blue's earlier ticket, and accepts the new urgent ticket. Record its actual ID:
 
-## 11. Cleanup deliberately
+```bash
+URGENT_TICKET_ID=2  # replace 2 with the ID in YOUR green response
+curl --fail-with-body -sS "http://127.0.0.1:18080/tickets/$URGENT_TICKET_ID/notification-preview"
+curl --fail-with-body -sS "$API_URL/version"
+```
 
-Follow [operations and cleanup](operations.md). The data PVC and Secret are retained by default. Only use `desk cleanup --delete-data` when you explicitly intend to erase the example's database too. Inspect/cancel active Runs/Builds first, retain evidence and verify generated children disappear with their parents.
+Expect the urgent ticket's preview and production still reporting **1.0.0**. The candidate shares the database, so its test writes are real even before promotion. Use synthetic data only.
+
+Stop the forward with **Ctrl+C in the second terminal** when finished. Keep the original terminal open.
+
+## 14. Promote green, then roll back
+
+Open **`openshift/traffic/to-green.patch.yaml`**. It contains only a Service selector:
+
+```yaml
+spec:
+  selector:
+    app: desk-api
+    slot: green
+```
+
+This is a **patch**, not a whole Service to apply. Before switching, verify both slots have finished rolling out and you have accepted the preview results:
+
+```bash
+oc rollout status deployment/desk-api-blue --timeout=300s
+oc rollout status deployment/desk-api-green --timeout=300s
+oc patch service desk-api --type=merge --patch-file openshift/traffic/to-green.patch.yaml
+oc describe service desk-api
+curl --fail-with-body -sS "$API_URL/version"
+```
+
+**Expected:** selector green and version **1.1.0**. Endpoint changes are asynchronous: existing requests may finish on blue; if necessary inspect/retry a GET after convergence. Do not change the expected version to conceal a problem.
+
+Create an urgent ticket through the production URL to verify the new capability:
+
+```bash
+curl --fail-with-body -sS "$API_URL/tickets" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Production release check","priority":"urgent"}'
+```
+
+Now restore blue **without rebuilding**:
+
+```bash
+oc patch service desk-api --type=merge --patch-file openshift/traffic/to-blue.patch.yaml
+oc describe service desk-api
+curl --fail-with-body -sS "$API_URL/version"
+curl --fail-with-body -sS "$API_URL/tickets/$URGENT_TICKET_ID"
+```
+
+**Expected:** version **1.0.0**, and the green-created urgent ticket is still readable. Blue rejects *creating* a new urgent ticket, but can read the stored value. This release deliberately avoids a schema change.
+
+**What just happened:** rollback changed traffic, not data. `rollout undo` is not the relevant operation because neither Deployment changed during the switch. Keep both slots available until verification finishes. A real database migration requires its own backwards-compatibility/rollback design.
+
+## 15. Understand Knative and finish
+
+Stop making preview requests. After the platform's idle window, inspect:
+
+```bash
+oc get pods -l serving.knative.dev/service=desk-renderer
+oc get deployments
+```
+
+Depending on policy/other traffic, the renderer may reach zero Pods. API and PostgreSQL Deployments remain running. Use the stable API URL and your original ticket ID to request another preview:
+
+```bash
+curl --fail-with-body -sS "$API_URL/tickets/$TICKET_ID/notification-preview"
+```
+
+A cold start may add latency; retry this safe GET after a few seconds if it returns a temporary 503. Do not infer scale-to-zero from a fixed sleep or claim the whole application is serverless.
+
+**You are done when you can explain:** which component built the images, how Tekton gated those builds, why green was initially isolated, which YAML patch promoted/rolled back traffic, and what Knative manages.
+
+If you want to continue, do the [optional failing-test experiment](your-own-release.md#see-a-real-test-rejection) before switching to a fork, then [release your own API change](your-own-release.md). Keep the installation running, stay in this checkout/project, and keep your original terminal open.
+
+When you are finished with all exercises, follow [cleanup](cleanup.md). If you only wanted the prepared walkthrough, you can clean up now.
+
+### Command quick reference
+
+| Command | Why you used it |
+| --- | --- |
+| `oc project` | Select and verify the target namespace. |
+| `oc apply -f` | Create/update a known ordinary YAML definition. |
+| `oc process … -o yaml > .local/FILE.yaml` | Fill a Template's visible parameters and keep inspectable output. |
+| `oc create -f` | Start a named PipelineRun/Job once. |
+| `tkn pipelinerun logs` / `describe` | Inspect execution output, status and image results. |
+| `oc wait` / `oc rollout status` | Wait for a specific success/readiness condition. |
+| `oc get … -o jsonpath=…` | Read a named result/URL into a variable without a custom script. |
+| `oc port-forward` | Reach the isolated green preview from the same terminal environment. |
+| `oc patch … --patch-file` | Promote or roll back by changing only the Service selector. |
+| `curl` | Verify real API behavior rather than trusting resource status alone. |

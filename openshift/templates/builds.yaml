@@ -1,0 +1,87 @@
+# OpenShift Template: process it to ordinary YAML before applying. No automatic build triggers.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: desk-build-recipes
+parameters:
+- name: GITHUB_REPOSITORY
+  description: Public GitHub owner/repository, without https:// or .git
+  required: true
+  value: tinmancoding/openshift-ticket-desk-example
+objects:
+- apiVersion: image.openshift.io/v1
+  kind: ImageStream
+  metadata:
+    name: desk-api
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+- apiVersion: build.openshift.io/v1
+  kind: BuildConfig
+  metadata:
+    name: desk-api
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    runPolicy: Serial
+    source:
+      type: Git
+      git:
+        uri: https://github.com/${GITHUB_REPOSITORY}.git
+        ref: main
+      contextDir: apps/api
+    strategy:
+      type: Docker
+      dockerStrategy:
+        dockerfilePath: Dockerfile
+    output:
+      to:
+        kind: ImageStreamTag
+        name: desk-api:latest
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 1Gi
+    successfulBuildsHistoryLimit: 3
+    failedBuildsHistoryLimit: 3
+    triggers: []
+- apiVersion: image.openshift.io/v1
+  kind: ImageStream
+  metadata:
+    name: desk-renderer
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+- apiVersion: build.openshift.io/v1
+  kind: BuildConfig
+  metadata:
+    name: desk-renderer
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    runPolicy: Serial
+    source:
+      type: Git
+      git:
+        uri: https://github.com/${GITHUB_REPOSITORY}.git
+        ref: main
+      contextDir: apps/renderer
+    strategy:
+      type: Docker
+      dockerStrategy:
+        dockerfilePath: Dockerfile
+    output:
+      to:
+        kind: ImageStreamTag
+        name: desk-renderer:latest
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 1Gi
+    successfulBuildsHistoryLimit: 3
+    failedBuildsHistoryLimit: 3
+    triggers: []

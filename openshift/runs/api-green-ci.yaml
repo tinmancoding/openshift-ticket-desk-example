@@ -1,0 +1,24 @@
+# API 1.1.0: adds urgent priority without a schema change. Use oc create, not apply, for a fresh execution.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+  name: desk-api-green-ci
+spec:
+  pipelineRef:
+    name: desk-ci
+  taskRunTemplate:
+    serviceAccountName: desk-builder
+  taskRunSpecs:
+  - pipelineTaskName: source-tests
+    serviceAccountName: desk-test
+  - pipelineTaskName: image-tests
+    serviceAccountName: desk-test
+  timeouts:
+    pipeline: 35m0s
+  params:
+  - name: component
+    value: api
+  - name: revision
+    value: e88bfa8912e6123f86ad7b7864f9f64b8433a125

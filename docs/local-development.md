@@ -9,7 +9,11 @@ make setup
 make check
 ```
 
-The application suite uses a memory repository **only as a unit-test double**. It tests request validation, create/read behavior, priorities, missing IDs, database/dependency errors and the API/renderer contract. Platform tests inspect Git-source build definitions, exact-commit/digest handling, Task ordering, least privilege, ownership and render-only behavior. They do not prove PostgreSQL, a real image build, cluster admission, ingress or Knative works.
+The application suite uses a memory repository **only as a unit-test double**. It tests request validation, create/read behavior, priorities, missing IDs, database/dependency errors and the API/renderer contract.
+
+Platform tests inspect YAML file kinds, required parameters, Git-source build definitions, exact-commit/digest handling, Task ordering, permissions, identities, traffic selectors and embedded-script synchronization. They also check the beginner command blocks. An optional local `oc` check processes Templates without contacting a cluster.
+
+These tests do not establish ownership of live resources or prove that PostgreSQL, image builds, cluster admission, ingress or Knative work on a cluster.
 
 ## Run with a real local database
 
@@ -54,6 +58,6 @@ Use only the example's synthetic-data database. `--keep-ticket` deliberately ret
 
 ## Source changes
 
-Application versions are source constants in each package's `__init__.py`, not deployment environment flags. The release walkthrough changes API code and tests, commits/pushes the change and builds that exact revision. This makes the source-to-artifact connection observable.
+Application versions are source constants in each package's `__init__.py`, not deployment environment flags. The prepared walkthrough uses published application snapshots. The optional [your own release](your-own-release.md) follow-up changes API code/tests, commits/pushes the change and builds that exact revision. This makes the source-to-artifact connection observable.
 
 For a production fork, lock transitive dependencies, pin base images by digest, scan dependencies/images, add authorization, use pooling and upgrade tests against a real PostgreSQL fixture. This initial example's direct dependency pins are not a reproducible lock or a security certification.

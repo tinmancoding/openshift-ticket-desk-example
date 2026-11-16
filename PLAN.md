@@ -1,32 +1,32 @@
-# Implementation plan
+# Ticket Desk implementation and teaching plan
 
 ## Objective
 
-A standalone, runnable and self-documented OpenShift example: a persistent support-ticket API, a stateless Knative notification-preview renderer, and a GitHub-to-digest release workflow. No workshop files or credentials are required.
+A standalone example connecting Git-source BuildConfigs, Tekton, an explicit blue/green API release and a stateless Knative renderer, with PostgreSQL persistence. It must be understandable through normal OpenShift resources and commands—not a custom deployment framework.
 
-## Architecture decisions
+## Current teaching decisions
 
-- Python/Flask HTTP components; PostgreSQL stores tickets. Rendered previews are returned on demand, not delivered as email. No unreliable synchronous email delivery is disguised as a durable event system.
-- Git-source Docker-strategy BuildConfigs own image construction. Tekton owns source tests, build invocation and image-contract checks. Both source checkout and Build use the same full Git SHA.
-- No binary uploads, privileged image-builder Tasks, automatic BuildConfig triggers or production image-change triggers.
-- Explicit human candidate deployment, distributed verification and blue/green Service-selector promotion. Promotion reuses a tested digest, never rebuilds it.
-- Both API slots share one database. The initial schema already contains priority; the example release adds an accepted priority value without a schema change. Rollback is traffic routing, not data rollback.
-- Renderer runs through Knative Serving; API and PostgreSQL remain ordinary Deployments. Knative does not magically make the database serverless.
-- Namespace-only build permissions; workflow identity cannot deploy or promote. Applications receive no API token.
-- Renderer is internal to the application's contract, but its Knative URL can be public depending on the platform. No authentication is provided: synthetic data only.
+- Canonical **YAML** in `openshift/`; small native OpenShift Templates expose repository, image digest, slot, renderer URL and compatible CLI image parameters. No Python Kubernetes manifest generator or deployment/modification CLI.
+- Separate recipes, executions and traffic patches. Learners see exactly which file creates a BuildConfig, starts a Run, deploys a slot or changes a Service selector.
+- A prepared first pass uses already-published 1.0.0/1.1.0 source commits. No fork, push credential, local Python setup or source editing is required for that platform walkthrough.
+- Optional follow-ups teach a real failing test and the learner's own pushed release. Application Python and developer tests remain separate from manifest authoring.
+- Each step introduces its vocabulary/command forms, has expected evidence and says when to stop. Processed files live in ignored `.local/` and are inspected before apply.
+- Native commands do not inherit the retired custom tool's owner/UID guards. Explicit project/name checks, known-file cleanup and data-retention decisions are taught honestly. No namespace-wide deletes or policy escalation.
 
-## Delivery slices and acceptance
+## Application/release decisions retained
 
-1. Application: validation, durable repository, dependency error handling, real unit tests, Dockerfiles and local setup.
-2. Platform: render-only manifest generation, storage/schema initialization, scoped build identity, two Git BuildConfigs, Tekton definitions, slots and stable/preview Services.
-3. Release: CLI that checks namespace/identity, waits for exact Run/Build, archives source/digest evidence, verifies candidates and changes routing explicitly.
-4. Documentation: architecture, walkthrough, operations/limitations and verification record. No default command mutates a cluster.
-5. Authorized acceptance: learner09 only; preflight identity/API/quota, local tests, then Git-source live checks after source publication. Record actual outcomes and any untested paths. Clean only owned example resources; never change platform/other users.
+- Flask ticket API with PostgreSQL; separate HTTP renderer returns notification previews without sending email.
+- Tekton tests source, invokes a Git-source Docker BuildConfig at the same full SHA, then tests the exact built digest. No binary uploads, privileged build Tasks or automatic build/production image-change triggers.
+- CI identity cannot deploy or promote. A human validates green and applies a visible Service-selector patch; rollback selects the existing blue image without rebuilding.
+- Both slots share one database. Urgent priority is a backwards-compatible, no-schema-change release. Rolling back traffic does not reverse data writes.
+- Knative manages only the stateless renderer; the API/database are ordinary workloads.
 
-## Current status
+## Acceptance
 
-The initial implementation and authorized Git-source release acceptance are complete. `main` preserves API 1.0.0 as the baseline; `feature/urgent-tickets` supplies the 1.1.0 reference solution. Source rejection, successful builds/image tests, deployed schema/API/Knative calls, candidate isolation, promotion, rollback, cross-version reads, actual CI permission denials and owned-resource cleanup were observed. Exact evidence and remaining limits are in [VERIFICATION.md](VERIFICATION.md). Local Compose runtime and production capabilities remain outside that acceptance claim.
+The earlier custom-tool implementation and reference urgent release were tested on learner09; exact historical evidence remains in `VERIFICATION.md`. The simplified native path has now passed its **own** 29-test offline checks and authorized learner09 rehearsal using the exact published application snapshots, including named retry, source rejection, release switches and native cleanup/data-retention behavior. Manifest hashes and precise limits are recorded separately; old tool results do not automatically certify new commands or unpublished source.
+
+Accepted findings from two independent read-only editorial reviews have since been applied to restart, continuation, cleanup and terminology guidance. Only documentation and its text-regression assertions changed in that follow-up; no additional test suite or cluster rehearsal was run.
 
 ## Not in scope
 
-Production authentication, authorization, rate limiting, durable notification delivery/outbox, Git webhook installation, automatic production approval, schema migration orchestration, high availability, backup/restore certification, cluster operator installation or broad SCC/RBAC grants. These are documented production gaps, not implied features.
+Production authentication/authorization, durable email/outbox, HA/backup certification, incompatible schema migration orchestration, automatic production approval, operator installation, quota changes or broad SCC/RBAC grants. See [operations](docs/operations.md) and [verification](VERIFICATION.md).

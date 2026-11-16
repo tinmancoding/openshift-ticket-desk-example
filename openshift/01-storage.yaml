@@ -1,0 +1,13 @@
+# Persistent database storage. Deleting this claim erases the example database.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: desk-db
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

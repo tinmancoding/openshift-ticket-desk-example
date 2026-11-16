@@ -1,0 +1,83 @@
+# PostgreSQL workload and internal Service. Requires desk-db Secret and PVC first.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: desk-db
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: desk-db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: ticket-desk
+        app: desk-db
+    spec:
+      serviceAccountName: desk-app
+      automountServiceAccountToken: false
+      containers:
+      - name: postgres
+        image: quay.io/sclorg/postgresql-16-c9s:latest
+        env:
+        - name: POSTGRESQL_USER
+          value: desk
+        - name: POSTGRESQL_DATABASE
+          value: desk
+        - name: POSTGRESQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: desk-db
+              key: password
+        ports:
+        - containerPort: 5432
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: '1'
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/pgsql/data
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - desk
+            - -d
+            - desk
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: desk-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: desk-db
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  selector:
+    app: desk-db
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432

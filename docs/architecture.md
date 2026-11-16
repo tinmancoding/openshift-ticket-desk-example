@@ -4,7 +4,7 @@
 
 A caller creates a support ticket and later requests a notification preview. Ticket creation commits to PostgreSQL independently of the renderer. If the renderer is unavailable, the preview request returns 503 and the ticket remains durable. A preview GET can be retried; automatically retrying a ticket POST could create duplicates.
 
-The renderer accepts a ticket representation and returns a subject/body as plain JSON text. It stores nothing and sends no external message. Bursty, stateless HTTP rendering is a plausible Knative workload; a persistent transactional database is not. Production notification delivery would need durable intent/outbox, queueing, idempotency and retries. This example does not pretend that a synchronous call solves those concerns.
+The renderer accepts ticket JSON and returns a JSON object containing a notification `subject` and body `text`. It stores nothing and sends no external message. Bursty, stateless HTTP rendering is a plausible Knative workload; a persistent transactional database is not. Production notification delivery would need durable intent/outbox, queueing, idempotency and retries. This example does not pretend that a synchronous call solves those concerns.
 
 ### HTTP contract
 
@@ -47,10 +47,14 @@ A Service-selector switch is not a distributed transaction. Endpoint changes tak
 
 Knative owns only the renderer's Revision/workload/ingress. Deploying a different renderer digest or changing its template produces a new Revision. Changing the API's blue/green selector does not. The API and PostgreSQL remain ordinary workloads even if the renderer reaches zero Pods.
 
-Cold starts can exceed the API's five-second dependency timeout. The smoke script retries safe preview GETs for a bounded interval, while reporting unrecoverable failures. Platform policy/traffic may prevent scale-to-zero. Never interpret a fixed sleep or `Ready=True` alone as proof of scale-to-zero or end-to-end reachability.
+Cold starts can exceed the API's five-second dependency timeout. The optional developer smoke script retries safe preview GETs for a bounded interval, while reporting unrecoverable failures. The beginner walkthrough explains explicitly when to retry a preview GET instead of silently automating it. Platform policy/traffic may prevent scale-to-zero. Never interpret a fixed sleep or `Ready=True` alone as proof of scale-to-zero or end-to-end reachability.
 
-## Manifest and state model
+## Manifest model: native YAML and small Templates
 
-`resources.py` is the single manifest source; render output is valid JSON accepted by `oc`. Definitions are reviewable without cluster access. The mutation CLI requires namespace, expected identity and matching confirmation. It uses `oc -n` rather than changing the user's active context.
+`openshift/` is the canonical, hand-maintained manifest source. Stable resources and the Pipeline graph are plain YAML. A few OpenShift Templates expose only the values that vary: image digest, slot, renderer URL, public GitHub repository or compatible CLI image. `oc process -o yaml` fills them; you inspect/save the ordinary YAML in ignored `.local/` and apply it explicitly. There is no custom deployment/generation CLI or private state ledger.
 
-Fixed `desk-*` names make the walkthrough readable. A random owner label plus recorded resource UIDs distinguishes this installation from similarly labeled/replaced resources. Existing unowned names are rejected. Updates use atomic UID/resourceVersion tests; cleanup uses API UID preconditions and waits for parent finalizers. Generated children are owned by Kubernetes/OpenShift/Tekton/Knative parents, not blindly selected for mass deletion.
+Prepared PipelineRun files select known published source commits, so the first walkthrough does not require a fork, push credentials or a local development environment. Implementing a new release is a separate follow-up. Source tests and the Git Build still use the same exact commit. Python inside a Task is application test code, not Kubernetes manifest generation.
+
+Fixed `desk-*` names make commands readable. **Native apply/delete does not verify ownership for you.** The learner selects/checks the project, reserves the names, retains the files and inspects existing resources before updates/cleanup. Static labels are inventory aids, not proof of ownership. The previous tool's UID guards do not apply to this new path. Kubernetes/OpenShift/Tekton/Knative controllers still own their generated children; remove known parents, not arbitrary Pods.
+
+The initial network file selects blue. Reapplying it after promotion would restore that selector; later switches deliberately use separate small YAML merge patches. This keeps exactly what changes visible. See the [walkthrough](walkthrough.md) and [cleanup](cleanup.md).

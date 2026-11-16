@@ -1,0 +1,246 @@
+# OpenShift Template for Tekton Tasks. Python here tests application source, not Kubernetes manifests.
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: desk-ci-tasks
+parameters:
+- name: GITHUB_REPOSITORY
+  description: Public GitHub owner/repository, without https:// or .git
+  required: true
+  value: tinmancoding/openshift-ticket-desk-example
+- name: CLI_IMAGE
+  description: Compatible oc client image; instructor may override this verified OKD 4.21 digest
+  required: true
+  value: quay.io/okd/scos-content@sha256:7fef5f29bd36518eb868e9a5be46e1b704db94e25511891feec70a32676e4648
+objects:
+- apiVersion: tekton.dev/v1
+  kind: Task
+  metadata:
+    name: desk-source-test
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    params:
+    - name: revision
+      type: string
+    steps:
+    - name: test-github-source
+      image: python:3.12-slim
+      env:
+      - name: REVISION
+        value: $(params.revision)
+      - name: ARCHIVE_ROOT
+        value: https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz
+      - name: HOME
+        value: /work
+      - name: PYTHONDONTWRITEBYTECODE
+        value: '1'
+      computeResources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: '1'
+          memory: 512Mi
+      volumeMounts:
+      - name: work
+        mountPath: /work
+      script: |
+        #!/usr/local/bin/python
+        """Tekton source gate. Public GitHub only; no credentials and no shell interpolation."""
+        import os
+        from pathlib import Path
+        import re
+        import subprocess
+        import sys
+        import tarfile
+        import urllib.request
+
+        revision = os.environ['REVISION']
+        if not re.fullmatch(r'[0-9a-f]{40}', revision):
+            raise SystemExit('A full lowercase commit SHA is required')
+        # ARCHIVE_ROOT is fixed by the reviewed Task definition, not supplied by an event.
+        url = os.environ['ARCHIVE_ROOT'] + '/' + revision
+        archive = Path('/work/source.tar.gz')
+        with urllib.request.urlopen(url, timeout=60) as response, archive.open('wb') as output:
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > 50 * 1024 * 1024:
+                    raise SystemExit('Source archive exceeds classroom limit')
+                output.write(chunk)
+        root = Path('/work/source')
+        root.mkdir()
+        with tarfile.open(archive) as source:
+            members = source.getmembers()
+            if sum(member.size for member in members) > 100 * 1024 * 1024:
+                raise SystemExit('Expanded source exceeds classroom limit')
+            if any(not (member.isfile() or member.isdir()) for member in members):
+                raise SystemExit('Links and special files are not accepted')
+            source.extractall(root, filter='data')
+        children = list(root.iterdir())
+        if len(children) != 1 or not children[0].is_dir():
+            raise SystemExit('Unexpected archive structure')
+        checkout = children[0]
+        # Packages go to ephemeral storage; no root, HOME write or system install needed.
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-cache-dir',
+                        '--target', '/work/deps', '-r', str(checkout / 'requirements-test.txt')], check=True)
+        env = dict(os.environ, PYTHONPATH='/work/deps', PYTHONDONTWRITEBYTECODE='1')
+        test_runner = '''
+        import sys
+        import unittest
+        suite = unittest.defaultTestLoader.discover('tests')
+        if suite.countTestCases() == 0:
+            raise SystemExit('No tests discovered; refusing an empty green gate')
+        result = unittest.TextTestRunner(verbosity=2).run(suite)
+        raise SystemExit(0 if result.wasSuccessful() else 1)
+        '''
+        subprocess.run([sys.executable, '-c', test_runner], cwd=checkout, env=env, check=True)
+        print('Required source tests passed at', revision)
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        seccompProfile:
+          type: RuntimeDefault
+    volumes:
+    - name: work
+      emptyDir: {}
+- apiVersion: tekton.dev/v1
+  kind: Task
+  metadata:
+    name: desk-build
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    params:
+    - name: revision
+      type: string
+    - name: component
+      type: string
+    steps:
+    - name: openshift-build
+      image: ${CLI_IMAGE}
+      env:
+      - name: REVISION
+        value: $(params.revision)
+      - name: COMPONENT
+        value: $(params.component)
+      - name: HOME
+        value: /tmp
+      computeResources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: '1'
+          memory: 256Mi
+      script: |
+        #!/bin/sh
+        set -eu
+        case "$COMPONENT" in api|renderer) ;; *) exit 1 ;; esac
+        case "$REVISION" in *[!0-9a-f]*) exit 1 ;; esac
+        test "${#REVISION}" -eq 40
+        config="desk-$COMPONENT"
+        build=$(oc start-build "$config" --commit="$REVISION" -o name)
+        printf '%s' "$build" > "$(results.build.path)"
+        echo "Started $build at $REVISION"
+        complete=false
+        for attempt in $(seq 1 180); do
+          phase=$(oc get "$build" -o jsonpath='{.status.phase}')
+          case "$phase" in
+            Complete) complete=true; break ;;
+            Failed|Error|Cancelled) oc logs "$build" || true; exit 1 ;;
+          esac
+          sleep 5
+        done
+        if [ "$complete" != true ]; then
+          echo "Build still active: inspect/cancel $build before cleanup" >&2
+          exit 1
+        fi
+        oc logs "$build"
+        actual=$(oc get "$build" -o jsonpath='{.spec.revision.git.commit}')
+        test "$actual" = "$REVISION"
+        digest=$(oc get "$build" -o jsonpath='{.status.output.to.imageDigest}')
+        case "$digest" in sha256:*) ;; *) exit 1 ;; esac
+        repository=$(oc get imagestream "$config" -o jsonpath='{.status.dockerImageRepository}')
+        test -n "$repository"
+        printf '%s@%s' "$repository" "$digest" > "$(results.image.path)"
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        seccompProfile:
+          type: RuntimeDefault
+    results:
+    - name: image
+      type: string
+    - name: build
+      type: string
+- apiVersion: tekton.dev/v1
+  kind: Task
+  metadata:
+    name: desk-image-test
+    labels:
+      app.kubernetes.io/part-of: ticket-desk
+  spec:
+    params:
+    - name: image
+      type: string
+    - name: component
+      type: string
+    steps:
+    - name: test-image
+      image: $(params.image)
+      workingDir: /app
+      env:
+      - name: COMPONENT
+        value: $(params.component)
+      - name: HOME
+        value: /tmp
+      - name: PYTHONDONTWRITEBYTECODE
+        value: '1'
+      computeResources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: '1'
+          memory: 256Mi
+      script: |
+        #!/usr/local/bin/python
+        """Test the actual built image before returning it as a release candidate."""
+        import os
+        import sys
+        sys.path.insert(0, '/app')
+        component = os.environ['COMPONENT']
+        if component == 'api':
+            from ticket_api import create_app
+            app = create_app()
+            client = app.test_client()
+            assert client.get('/healthz').status_code == 200
+            assert client.get('/version').get_json()['component'] == 'api'
+            # This invalid request must not require a database connection.
+            assert client.post('/tickets', json={'title': ''}).status_code == 400
+        elif component == 'renderer':
+            from notification_renderer import create_app
+            client = create_app().test_client()
+            result = client.post('/render', json={'id': 7, 'title': 'Printer offline', 'priority': 'normal'})
+            assert result.status_code == 200, result.data
+            assert result.get_json()['ticket_id'] == 7
+            assert 'Printer offline' in result.get_json()['subject']
+        else:
+            raise SystemExit('Unknown component')
+        print('Built-image contract checks passed:', component)
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        seccompProfile:
+          type: RuntimeDefault

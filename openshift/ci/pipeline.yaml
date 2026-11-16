@@ -1,0 +1,45 @@
+# The workflow graph: source tests -> Git BuildConfig build -> built-image tests. No deployment permissions.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: desk-ci
+  labels:
+    app.kubernetes.io/part-of: ticket-desk
+spec:
+  params:
+  - name: revision
+    type: string
+  - name: component
+    type: string
+  results:
+  - name: image
+    value: $(tasks.build.results.image)
+  - name: build
+    value: $(tasks.build.results.build)
+  tasks:
+  - name: source-tests
+    taskRef:
+      name: desk-source-test
+    params:
+    - name: revision
+      value: $(params.revision)
+  - name: build
+    runAfter:
+    - source-tests
+    taskRef:
+      name: desk-build
+    params:
+    - name: revision
+      value: $(params.revision)
+    - name: component
+      value: $(params.component)
+  - name: image-tests
+    runAfter:
+    - build
+    taskRef:
+      name: desk-image-test
+    params:
+    - name: component
+      value: $(params.component)
+    - name: image
+      value: $(tasks.build.results.image)

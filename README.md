@@ -47,6 +47,17 @@ make check
 
 These commands do not authenticate to or mutate a cluster. The opt-in HTTP smoke test creates a synthetic ticket only when explicitly requested.
 
+## Baseline and reference release
+
+| Branch | Purpose |
+| --- | --- |
+| `main` | API **1.0.0** baseline and the complete walkthrough. Start here to implement the release yourself. |
+| `feature/urgent-tickets` | API **1.1.0** reference solution. Its history first adds the failing urgent-ticket contract, then implements it. |
+
+The full Git-source CI, candidate preview, promotion, rollback, cross-version persistence and Knative idle/wake path have been exercised on OKD with a namespace-scoped learner account. The exact commits, image digests, expected failure and cleanup evidence are recorded in [VERIFICATION.md](VERIFICATION.md). This is example acceptance, not production certification.
+
+Use a **new branch name** for your own exercise; do not overwrite the published reference branch. Main's offline suite has 30 tests; the reference release has 31.
+
 ## Repository map
 
 | Path | Contents |

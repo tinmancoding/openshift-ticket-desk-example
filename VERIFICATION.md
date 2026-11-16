@@ -4,7 +4,7 @@
 
 This record distinguishes local tests, authorized learner09 checks and still-unverified paths. A manifest rendering successfully is not a live application acceptance result. No workshop suite result certifies this standalone repository.
 
-## 2026-11-16 — initial implementation
+## 2026-11-16 — initial implementation, before publication (historical)
 
 ### Offline
 
@@ -33,9 +33,9 @@ Private/ignored evidence: `build/setup*.log`, `build/postgres-{first,after-resta
 
 **Cleanup passed:** the CLI's UID-precondition cleanup removed both Runs, owned definitions/identities, database workload, Secret and PVC. A final metadata-only audit of **22 resource kinds** found no `desk-*`/owner-label residue and zero workload Pods in learner09. Platform defaults were retained; no port-forward or local HTTP server remains. Evidence: `build/cleanup.log`, `build/cleanup-audit.json`.
 
-### Not yet verified
+### Limits at that checkpoint
 
-The implementation has not been committed/pushed to GitHub. Consequently the cluster cannot fetch these new application/Task/test files as Git source. The following are **not claimed as passed**:
+At this pre-publication checkpoint, the implementation was not yet committed/pushed to GitHub. The following were **not claimed as passed** then; the subsequent Git-source acceptance below supersedes the applicable limits:
 
 - successful complete source-test → Git BuildConfig → built-image-test PipelineRuns for the new components;
 - actual application image compatibility/registry pull behavior;
@@ -44,4 +44,59 @@ The implementation has not been committed/pushed to GitHub. Consequently the clu
 - actual renderer Revision/scale-to-zero/wake-up behavior;
 - Docker Compose runtime (not exercised merely by unit tests).
 
-Publication of a reviewed implementation commit is the next dependency for complete Git-source acceptance. Do not substitute a binary upload, a different repository or a locally mocked build and call it that acceptance.
+Publication was required for complete Git-source acceptance. No binary upload, different repository or locally mocked build was substituted.
+
+## 2026-11-16 — published Git-source acceptance
+
+**Result: the documented baseline → rejected contract → green preview → promotion → rollback lifecycle passed on OKD using learner09.** This is observed single-user acceptance, not a production readiness, concurrency, availability or security certification. No executable fixes or permission widening were needed during this phase.
+
+### Published source and required CI
+
+| Source | Purpose | PipelineRun | Observed outcome |
+| --- | --- | --- | --- |
+| `9865bcd86d11c41a63270d52bcfe04666357b2f5` | Baseline renderer 1.0.0 | `desk-ci-9bnlq` | Source tests, Git BuildConfig `desk-renderer-1`, image checks: all passed. |
+| `9865bcd86d11c41a63270d52bcfe04666357b2f5` | Baseline API 1.0.0 | `desk-ci-489k7` | Source tests, Git BuildConfig `desk-api-1`, image checks: all passed. |
+| `348652941ff39a62785f656612a8970b4e55eb49` | Urgent-ticket test **before** implementation | `desk-ci-5vnsh` | Expected rejection: real test received 400 instead of 201; build/image Tasks skipped. Build inventory unchanged. |
+| `e88bfa8912e6123f86ad7b7864f9f64b8433a125` | API 1.1.0 implementing urgent tickets | `desk-ci-j4bsr` | Source tests, Git BuildConfig `desk-api-2`, image checks: all passed. |
+
+The baseline required **30 tests**; the feature required **31 tests** including the previously failing urgent contract. The feature is published on `feature/urgent-tickets`. Its history retains the red contract commit and passing implementation. `main` remains the 1.0.0 starting point. Subsequent verification/navigation documentation does not change the tested executable content; these exact SHAs remain the build evidence, not a claim that a later documentation commit was rebuilt.
+
+All positive builds used public GitHub source and the exact supplied SHA. The CLI checked whole-Run success, the named Build's Complete phase/recorded commit and a full immutable image reference. Actual built-image Tasks pulled those digests under the token-free test identity. Outputs were:
+
+| Artifact | SHA256 image digest |
+| --- | --- |
+| Renderer 1.0.0 | `941d4d1ae200540e223aeec24471c12541e0eb82b06f79c2983d0d33eb6f84f7` |
+| API blue 1.0.0 | `7686946126435ef2c154653f5b7a918e878f9adee070d59eacc120ac7b4cb758` |
+| API green 1.1.0 | `d1f9916f068ef2f8d2e58ffa1b60710521be2ac47adf827ba3be8c828ed41c3e` |
+
+These were registry repositories under `image-registry.openshift-image-registry.svc:5000/learner09/desk-{api,renderer}`. The acceptance installation and its ImageStreams have since been removed; digests identify observed artifacts, not a promise of permanent registry retention.
+
+### Deployed application and release checks
+
+- The **image-backed schema Job** completed and initialized the real PostgreSQL table.
+- The built renderer became Knative Ready as Revision `desk-renderer-00001`; the built API blue slot rolled out and its edge-TLS Route worked with normal certificate verification.
+- Blue reported **1.0.0**, created/read ticket 1 and obtained its preview through an actual **in-cluster API → Knative renderer** call.
+- Green used its own tested digest, reported **1.1.0** through the preview Service, read blue's ticket 1 and created urgent ticket 2 with a matching renderer preview. The production URL still reported blue 1.0.0.
+- Explicit Service-selector promotion to green converged; production smoke created urgent ticket 3, read the original ticket and passed its preview checks.
+- Explicit selector rollback to blue converged; production smoke created normal ticket 4 and read the original ticket. Blue could also read green-created urgent ticket 2, while a **new** urgent POST was correctly rejected with 400. No image rebuild or schema change occurred during promotion/rollback.
+- The renderer Revision remained `desk-renderer-00001` throughout the API release: backend/API routing changes did not create a Knative Revision.
+- After traffic stopped, metadata polling observed the renderer reach **zero Pods**. The next preview request woke the same Revision and returned 200. The observed request took about **1.25 seconds**; this is one measurement, not a startup SLA. API/PostgreSQL remained ordinary Deployments.
+- A separate owned Job using the **actual `desk-builder` ServiceAccount** verified denials for Deployment/Service patching, Secret reads, RoleBinding/ClusterRoleBinding creation and Pod reads in the default namespace. It did not impersonate another account, attempt actual forbidden mutations or grant new permissions.
+
+### Cleanup and evidence
+
+**Full cleanup passed.** The ownership/UID-precondition CLI removed current Runs, schema/authorization Jobs, Knative parent, API slots, routing, PostgreSQL, BuildConfigs/ImageStreams, Tasks/Pipeline, narrow namespace RBAC, identities, Secret and PVC. A final metadata-only audit of **26 resource kinds**, including EndpointSlices and Knative internal autoscaling/networking parents, found no `desk-*`/owner-label residue and zero workload Pods. Default platform resources were retained. No other learner, terminal, operator, quota or infrastructure-management operation was changed.
+
+Ignored/private evidence includes:
+
+- `.state/desk-ci-{9bnlq,489k7,5vnsh,j4bsr}/{run.json,logs.txt,build.json}` (Build JSON only for successful runs);
+- `build/{renderer,api-blue,api-green}-ci.log`, deployment/schema logs and before/after rejected-build inventories;
+- `build/{blue,green-preview,production-green,production-blue}-smoke.log`;
+- `build/release-acceptance.json`, `build/knative-idle-wake.json`, `build/builder-permissions.log`;
+- `build/published-cleanup.log`, `build/published-cleanup-audit.json`.
+
+Private state/logs are not published; no credentials are included here. Expected failures remain archived separately rather than being erased or counted as successful application builds.
+
+### Remaining boundaries
+
+Docker Compose configuration was validated, but **Compose runtime was not exercised**. No multi-user load, HA, backups/restores, real email delivery, production authentication, database migration compatibility beyond this no-schema-change release, webhook integration or cross-cluster/image reproducibility claim is made. Mutable base/tool/database images and transitive dependencies still require an approved pin/lock/update policy for production use.

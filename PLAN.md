@@ -23,6 +23,10 @@ A standalone, runnable and self-documented OpenShift example: a persistent suppo
 4. Documentation: architecture, walkthrough, operations/limitations and verification record. No default command mutates a cluster.
 5. Authorized acceptance: learner09 only; preflight identity/API/quota, local tests, then Git-source live checks after source publication. Record actual outcomes and any untested paths. Clean only owned example resources; never change platform/other users.
 
+## Current status
+
+The initial implementation and authorized Git-source release acceptance are complete. `main` preserves API 1.0.0 as the baseline; `feature/urgent-tickets` supplies the 1.1.0 reference solution. Source rejection, successful builds/image tests, deployed schema/API/Knative calls, candidate isolation, promotion, rollback, cross-version reads, actual CI permission denials and owned-resource cleanup were observed. Exact evidence and remaining limits are in [VERIFICATION.md](VERIFICATION.md). Local Compose runtime and production capabilities remain outside that acceptance claim.
+
 ## Not in scope
 
 Production authentication, authorization, rate limiting, durable notification delivery/outbox, Git webhook installation, automatic production approval, schema migration orchestration, high availability, backup/restore certification, cluster operator installation or broad SCC/RBAC grants. These are documented production gaps, not implied features.

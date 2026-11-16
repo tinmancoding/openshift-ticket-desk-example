@@ -48,6 +48,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(response.headers['Location']).get_json(), data)
         self.assertEqual(self.client.get('/tickets').get_json()['tickets'], [data])
 
+    def test_urgent_ticket(self):
+        response = self.client.post('/tickets', json={'title': 'System unavailable', 'priority': 'urgent'})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.get_json()['priority'], 'urgent')
+
     def test_all_supported_priorities(self):
         for priority in PRIORITIES:
             response = self.client.post('/tickets', json={'title': 'Help', 'priority': priority})

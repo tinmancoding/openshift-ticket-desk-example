@@ -7,8 +7,8 @@ import json
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-VERSION = "1.0.0"
-PRIORITIES = {"normal", "high"}
+VERSION = "1.1.0"
+PRIORITIES = {"normal", "high", "urgent"}
 
 
 def http_preview(url, ticket):
